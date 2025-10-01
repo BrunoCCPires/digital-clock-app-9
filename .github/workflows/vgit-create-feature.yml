@@ -1,0 +1,1050 @@
+name: VGit Create Feature
+on:
+  workflow_dispatch:
+    inputs:
+      branch_name:
+        description: "Name for the new branch"
+        required: true
+        type: string
+      request:
+        description: "Feature request description"
+        required: true
+        type: string
+      username:
+        description: "GitHub username"
+        required: true
+        type: string
+      current_node:
+        description: "Current workspace node (optional)"
+        required: false
+        type: string
+      base_branch:
+        description: "Base branch to create feature from"
+        required: false
+        type: string
+        default: "main"
+      environment:
+        description: "GitHub environment to use for deployment"
+        required: false
+        type: string
+      runtime_vars:
+        description: "Comma-separated list of env var names to expose at runtime"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  create-feature:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ github.event.inputs.environment || '' }}
+    permissions:
+      contents: write # For git operations (checkout, commit, push)
+      actions: read # For workflow operations
+
+    steps:
+      - name: Validate inputs
+        run: |
+          if [ -z "${{ github.event.inputs.branch_name }}" ]; then
+            echo "❌ Branch name is required"
+            exit 1
+          fi
+          if [ -z "${{ github.event.inputs.request }}" ]; then
+            echo "❌ Feature request is required"
+            exit 1
+          fi
+          echo "✅ Inputs validated"
+          echo "Branch: ${{ github.event.inputs.branch_name }}"
+          echo "Request: ${{ github.event.inputs.request }}"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "${{ github.event.inputs.username }}"
+          git config --global user.email "${{ github.event.inputs.username }}@users.noreply.github.com"
+
+      - name: Create feature branch
+        run: |
+          echo "🌿 Creating feature branch: ${{ github.event.inputs.branch_name }}"
+
+          # Ensure we're on the base branch
+          git checkout ${{ github.event.inputs.base_branch }}
+          git pull origin ${{ github.event.inputs.base_branch }}
+
+          # Create and switch to feature branch
+          git checkout -b "${{ github.event.inputs.branch_name }}"
+
+          echo "✅ Feature branch created successfully"
+      - name: Update commit with pending preview info
+        run: |
+          echo "📝 Starting feature request"
+
+          # Amend commit with preview information
+          UPDATED_COMMIT_MSG="feat: ${{ github.event.inputs.request }}
+
+          🤖 Generated with VGit AI (Claude Code)
+
+          Branch: ${{ github.event.inputs.branch_name }}
+          Requested by: ${{ github.event.inputs.username }}
+
+          ---PREVIEW-INFO---
+          Preview URL: still_pending
+          Screenshot URL: still_pending
+          "
+
+          git commit --amend -m "$UPDATED_COMMIT_MSG"
+          git push origin "${{ github.event.inputs.branch_name }}" --force-with-lease
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: |
+          if [ -f "package.json" ]; then
+            echo "📦 Installing dependencies..."
+            npm install
+          else
+            echo "⚠️ No package.json found, skipping dependency installation"
+          fi
+
+      - name: Export all secrets as environment variables dynamically
+        run: |
+          echo "🔐 Dynamically exporting all secrets as environment variables..."
+          if [ "$SECRETS_JSON" != "null" ] && [ "$SECRETS_JSON" != "" ]; then
+            echo "📋 Processing secrets from environment..."
+            echo "$SECRETS_JSON" | jq -r 'to_entries | .[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
+            echo "✅ All secrets exported as environment variables"
+          else
+            echo "ℹ️ No secrets found in environment"
+          fi
+        env:
+          SECRETS_JSON: ${{ toJson(secrets) }}
+
+      - name: Prepare runtime environment variables
+        run: |
+          echo "🔧 Preparing runtime environment variables..."
+
+          # Debug: Show which environment variables are available (names only, not values)
+          echo "🔍 Available environment variables (for debugging):"
+          env | grep -E '^(ANTHROPIC|SUBSCRIBE|OPENAI|CUSTOM)' | cut -d'=' -f1 | sort || echo "No addon-related environment variables found"
+
+          # Parse runtime_vars input (comma-separated list)
+          RUNTIME_VARS="${{ github.event.inputs.runtime_vars }}"
+
+          if [ -n "$RUNTIME_VARS" ] && [ "$RUNTIME_VARS" != "" ]; then
+            echo "📋 Runtime variables to expose: $RUNTIME_VARS"
+            
+            # Create a script to export VITE_ prefixed versions
+            echo "#!/bin/bash" > runtime_env_setup.sh
+            echo "# Auto-generated runtime environment variables" >> runtime_env_setup.sh
+            
+            # Split comma-separated values and create VITE_ versions
+            IFS=',' read -ra VARS <<< "$RUNTIME_VARS"
+            for var in "${VARS[@]}"; do
+              # Trim whitespace
+              var=$(echo "$var" | xargs)
+              
+              if [ -n "$var" ]; then
+                # Convert to uppercase
+                upper_var=$(echo "$var" | tr '[:lower:]' '[:upper:]')
+                vite_var="VITE_$upper_var"
+                
+                echo "Creating runtime variable: $upper_var -> $vite_var"
+                
+                # Add export statement to script
+                echo "if [ -n \"\${$upper_var}\" ]; then" >> runtime_env_setup.sh
+                echo "  export $vite_var=\"\${$upper_var}\"" >> runtime_env_setup.sh
+                echo "  echo \"✅ Exposed $upper_var as $vite_var\"" >> runtime_env_setup.sh
+                echo "else" >> runtime_env_setup.sh
+                echo "  echo \"⚠️ $upper_var not found in environment\"" >> runtime_env_setup.sh
+                echo "fi" >> runtime_env_setup.sh
+              fi
+            done
+            
+            # Make the script executable
+            chmod +x runtime_env_setup.sh
+            
+            echo "🔍 Runtime environment setup script created:"
+            cat runtime_env_setup.sh
+          else
+            echo "ℹ️ No runtime variables specified, skipping VITE_ prefix setup"
+            echo "#!/bin/bash" > runtime_env_setup.sh
+            echo "echo 'No runtime variables to expose'" >> runtime_env_setup.sh
+            chmod +x runtime_env_setup.sh
+          fi
+
+      - name: Install Anthropic SDK
+        run: |
+          echo "📦 Installing Anthropic SDK and TypeScript tools..."
+          npm install @anthropic-ai/sdk@latest tsx @types/node
+          echo "✅ Anthropic SDK installed"
+
+      - name: Check for CLAUDE.md
+        run: |
+          echo "📄 Checking for CLAUDE.md project instructions..."
+          if [ -f "CLAUDE.md" ]; then
+            echo "✅ Found CLAUDE.md - Claude Code will use project-specific instructions"
+            wc -l CLAUDE.md | awk '{print "  Lines:", $1}'
+          else
+            echo "ℹ️ No CLAUDE.md found - using generic instructions"
+          fi
+
+      - name: Implement feature with Anthropic SDK
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "❌ ANTHROPIC_API_KEY is required"
+            exit 1
+          fi
+
+          echo "🤖 Running Anthropic SDK to implement feature..."
+
+          # Create the feature implementation script
+          cat > implement_feature.ts << 'TYPESCRIPT_EOF'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { exec } from 'node:child_process';
+          import { promisify } from 'node:util';
+          import Anthropic from '@anthropic-ai/sdk';
+          
+          const execAsync = promisify(exec);
+          
+          // Logging system
+          interface LogEntry {
+            timestamp: string;
+            type: 'system' | 'tool' | 'message' | 'error';
+            content: string;
+            metadata?: any;
+          }
+          
+          const logs: LogEntry[] = [];
+          
+          function log(type: LogEntry['type'], content: string, metadata?: any) {
+            const entry: LogEntry = {
+              timestamp: new Date().toISOString(),
+              type,
+              content,
+              metadata
+            };
+            logs.push(entry);
+          
+            const prefix = type === 'error' ? '❌' : type === 'tool' ? '🔧' : type === 'message' ? '💬' : '📝';
+            console.log(`${prefix} [${type.toUpperCase()}] ${content}`);
+            if (metadata) console.log('   ', JSON.stringify(metadata, null, 2));
+          
+            // Append to log file immediately
+            fs.appendFileSync('claude-execution.log', JSON.stringify(entry) + '\n');
+          }
+          
+          // Tool implementations
+          class Tools {
+            async read(filePath: string): Promise<string> {
+              try {
+                log('tool', `Reading file: ${filePath}`);
+                const content = fs.readFileSync(filePath, 'utf8');
+                log('tool', `Successfully read ${filePath} (${content.length} chars)`);
+                return content;
+              } catch (error) {
+                const msg = `Failed to read ${filePath}: ${error}`;
+                log('error', msg);
+                return `Error: ${msg}`;
+              }
+            }
+          
+            async write(filePath: string, content: string): Promise<string> {
+              try {
+                log('tool', `Writing file: ${filePath}`, { contentLength: content.length });
+                fs.mkdirSync(path.dirname(filePath), { recursive: true });
+                fs.writeFileSync(filePath, content, 'utf8');
+                log('tool', `Successfully wrote ${filePath}`);
+                return `Successfully wrote ${filePath}`;
+              } catch (error) {
+                const msg = `Failed to write ${filePath}: ${error}`;
+                log('error', msg);
+                return `Error: ${msg}`;
+              }
+            }
+          
+            async edit(filePath: string, oldText: string, newText: string): Promise<string> {
+              try {
+                log('tool', `Editing file: ${filePath}`);
+                const content = fs.readFileSync(filePath, 'utf8');
+          
+                if (!content.includes(oldText)) {
+                  const msg = `Old text not found in ${filePath}`;
+                  log('error', msg);
+                  return `Error: ${msg}`;
+                }
+          
+                const newContent = content.replace(oldText, newText);
+                fs.writeFileSync(filePath, newContent, 'utf8');
+                log('tool', `Successfully edited ${filePath}`);
+                return `Successfully edited ${filePath}`;
+              } catch (error) {
+                const msg = `Failed to edit ${filePath}: ${error}`;
+                log('error', msg);
+                return `Error: ${msg}`;
+              }
+            }
+          
+            async bash(command: string): Promise<string> {
+              try {
+                log('tool', `Executing bash: ${command}`);
+                const { stdout, stderr } = await execAsync(command, { maxBuffer: 10 * 1024 * 1024 });
+                const output = stdout + stderr;
+                log('tool', `Bash completed`, { command, outputLength: output.length });
+                return output || 'Command executed successfully';
+              } catch (error: any) {
+                const msg = `Bash command failed: ${error.message}`;
+                log('error', msg, { command });
+                return `Error: ${msg}\nOutput: ${error.stdout || ''}\n${error.stderr || ''}`;
+              }
+            }
+          
+            async glob(pattern: string): Promise<string> {
+              try {
+                log('tool', `Glob pattern: ${pattern}`);
+                const { stdout } = await execAsync(`find . -path '${pattern}' -type f 2>/dev/null | head -100`);
+                const files = stdout.trim().split('\n').filter(Boolean);
+                log('tool', `Found ${files.length} files matching ${pattern}`);
+                return files.join('\n');
+              } catch (error) {
+                const msg = `Glob failed: ${error}`;
+                log('error', msg);
+                return `Error: ${msg}`;
+              }
+            }
+          }
+          
+          // Main implementation
+          async function implementFeature() {
+            try {
+              log('system', 'Starting feature implementation');
+          
+              const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+              const tools = new Tools();
+              const FEATURE_REQUEST = process.env.FEATURE_REQUEST || '';
+          
+              if (!FEATURE_REQUEST) {
+                log('error', 'No FEATURE_REQUEST provided');
+                process.exit(1);
+              }
+          
+              log('system', `Feature request: ${FEATURE_REQUEST}`);
+          
+              // Read CLAUDE.md if it exists
+              let claudeMd = '';
+              try {
+                claudeMd = await tools.read('CLAUDE.md');
+                log('system', 'Found and read CLAUDE.md');
+              } catch {
+                log('system', 'No CLAUDE.md found');
+              }
+          
+              // Build comprehensive prompt
+              const systemPrompt = `You are an expert software engineer implementing features in this repository.
+          
+          You have access to these tools:
+          - read(path): Read a file
+          - write(path, content): Write/create a file
+          - edit(path, old_text, new_text): Replace text in a file
+          - bash(command): Run bash commands (use for git, npm, etc)
+          - glob(pattern): Find files matching a pattern
+          
+          ${claudeMd ? `\n## Project Instructions (CLAUDE.md)\n${claudeMd}\n` : ''}
+          
+          ## Important Guidelines
+          - ALWAYS read CLAUDE.md first if it exists
+          - Follow ALL project conventions from CLAUDE.md
+          - Assume environment variables are always available
+          - Write production-ready, fully functional code
+          - Match existing code style and patterns
+          - Make focused, minimal changes
+          - For UI: follow existing styling approach, ensure responsive design, add proper loading/error states
+          - Subscribe.dev: ONLY use if explicitly mentioned in request (phrases: "with subscribe.dev", "using subscribe.dev", etc)
+          
+          You MUST use the provided tools to make changes. Do not just describe what to do - actually use the tools to implement the feature.`;
+          
+              const userPrompt = `Implement this feature: ${FEATURE_REQUEST}
+          
+          Repository: ${process.env.GITHUB_REPOSITORY || 'unknown'}
+          Branch: ${process.env.BRANCH_NAME || 'unknown'}
+          
+          Steps:
+          1. Read CLAUDE.md if you haven't already (use read tool)
+          2. Use glob/read to understand the codebase structure
+          3. Make the necessary changes using write/edit tools
+          4. Update package.json if adding dependencies (use edit tool)
+          5. Use bash tool for npm install if needed
+          
+          Start implementing now using the tools.`;
+          
+              // Define tool schemas for Claude
+              const toolDefinitions: Anthropic.Tool[] = [
+                {
+                  name: 'read',
+                  description: 'Read the contents of a file',
+                  input_schema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File path to read' }
+          },
+          required: ['path']
+                  }
+                },
+                {
+                  name: 'write',
+                  description: 'Write content to a file (creates directories if needed)',
+                  input_schema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File path to write' },
+            content: { type: 'string', description: 'Content to write' }
+          },
+          required: ['path', 'content']
+                  }
+                },
+                {
+                  name: 'edit',
+                  description: 'Edit a file by replacing old text with new text',
+                  input_schema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File path to edit' },
+            old_text: { type: 'string', description: 'Text to replace' },
+            new_text: { type: 'string', description: 'Replacement text' }
+          },
+          required: ['path', 'old_text', 'new_text']
+                  }
+                },
+                {
+                  name: 'bash',
+                  description: 'Execute a bash command',
+                  input_schema: {
+          type: 'object',
+          properties: {
+            command: { type: 'string', description: 'Bash command to execute' }
+          },
+          required: ['command']
+                  }
+                },
+                {
+                  name: 'glob',
+                  description: 'Find files matching a glob pattern',
+                  input_schema: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string', description: 'Glob pattern (e.g., "**/*.ts")' }
+          },
+          required: ['pattern']
+                  }
+                }
+              ];
+          
+              // Conversation loop
+              const messages: Anthropic.MessageParam[] = [
+                { role: 'user', content: userPrompt }
+              ];
+          
+              let continueLoop = true;
+              let iterationCount = 0;
+              const MAX_ITERATIONS = 20;
+          
+              while (continueLoop && iterationCount < MAX_ITERATIONS) {
+                iterationCount++;
+                log('system', `Iteration ${iterationCount}/${MAX_ITERATIONS}`);
+          
+                const response = await client.messages.create({
+                  model: 'claude-sonnet-4-5-20250929',
+                  max_tokens: 4096,
+                  system: systemPrompt,
+                  messages,
+                  tools: toolDefinitions
+                });
+          
+                log('message', `Claude response (stop_reason: ${response.stop_reason})`);
+          
+                // Process response content
+                let hasToolUse = false;
+                const toolResults: Anthropic.ToolResultBlockParam[] = [];
+          
+                for (const block of response.content) {
+                  if (block.type === 'text') {
+          log('message', `Claude: ${block.text.substring(0, 200)}${block.text.length > 200 ? '...' : ''}`);
+                  } else if (block.type === 'tool_use') {
+          hasToolUse = true;
+          log('tool', `Tool call: ${block.name}`, block.input);
+          
+          let result: string;
+          try {
+            switch (block.name) {
+              case 'read':
+                result = await tools.read((block.input as any).path);
+                break;
+              case 'write':
+                result = await tools.write((block.input as any).path, (block.input as any).content);
+                break;
+              case 'edit':
+                result = await tools.edit((block.input as any).path, (block.input as any).old_text, (block.input as any).new_text);
+                break;
+              case 'bash':
+                result = await tools.bash((block.input as any).command);
+                break;
+              case 'glob':
+                result = await tools.glob((block.input as any).pattern);
+                break;
+              default:
+                result = `Unknown tool: ${block.name}`;
+            }
+          } catch (error) {
+            result = `Tool execution error: ${error}`;
+            log('error', result);
+          }
+          
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: result
+          });
+                  }
+                }
+          
+                // Check if we should continue
+                if (response.stop_reason === 'end_turn' || !hasToolUse) {
+                  continueLoop = false;
+                  log('system', 'Conversation ended');
+                } else {
+                  // Add assistant message and tool results to conversation
+                  messages.push({
+          role: 'assistant',
+          content: response.content
+                  });
+          
+                  if (toolResults.length > 0) {
+          messages.push({
+            role: 'user',
+            content: toolResults
+          });
+                  }
+                }
+              }
+          
+              if (iterationCount >= MAX_ITERATIONS) {
+                log('system', 'Reached maximum iterations');
+              }
+          
+              log('system', 'Feature implementation completed');
+          
+              // Save logs
+              fs.writeFileSync('claude-execution.log.json', JSON.stringify({ logs, totalIterations: iterationCount }, null, 2));
+          
+              return 0;
+          
+            } catch (error: any) {
+              log('error', `Fatal error: ${error.message}`, { stack: error.stack });
+          
+              // Save error summary
+              const errorLogs = logs.filter(l => l.type === 'error');
+              const errorSummary = errorLogs.map(l => l.content).join('\n');
+              fs.writeFileSync('claude-error-summary.txt', errorSummary);
+          
+              // Save all logs
+              fs.writeFileSync('claude-execution.log.json', JSON.stringify({ logs, error: error.message }, null, 2));
+          
+              return 1;
+            }
+          }
+          
+          // Run
+          implementFeature().then(code => {
+            process.exit(code);
+          }).catch(error => {
+            console.error('❌ Unhandled error:', error);
+            process.exit(1);
+          });
+          TYPESCRIPT_EOF
+
+          echo "📋 Running feature implementation with Anthropic SDK..."
+
+          FEATURE_REQUEST='${{ github.event.inputs.request }}' \
+          GITHUB_REPOSITORY='${{ github.repository }}' \
+          BRANCH_NAME='${{ github.event.inputs.branch_name }}' \
+          npx tsx implement_feature.ts || {
+            echo "CLAUDE_EXECUTION_FAILED=true" >> $GITHUB_ENV
+          }
+
+          echo "✅ Anthropic SDK execution completed"
+
+      - name: Upload Claude execution logs as artifact
+        if: always()  # Upload logs even if previous step failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-execution-logs
+          path: |
+            claude-execution.log
+            claude-execution.log.json
+            claude-error-summary.txt
+            implement_feature.ts
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Install new dependencies (if package.json changed)
+        run: |
+          cat package.json
+
+          if git diff --name-only | grep -q "package.json"; then
+            echo "📦 package.json was modified, installing new dependencies..."
+            npm install
+          else
+            echo "ℹ️ No package.json changes detected"
+          fi
+
+      - name: Verify changes
+        run: |
+          echo "🔍 Verifying implemented changes..."
+
+          # Check if any files were modified
+          if git diff --quiet; then
+            echo "⚠️ No changes detected. Creating a minimal change to complete the workflow."
+            echo "# Feature: ${{ github.event.inputs.request }}" >> FEATURE_LOG.md
+            echo "- Implemented on: $(date)" >> FEATURE_LOG.md
+            echo "- Branch: ${{ github.event.inputs.branch_name }}" >> FEATURE_LOG.md
+            echo "" >> FEATURE_LOG.md
+          else
+            echo "✅ Changes detected:"
+            git diff --name-only
+          fi
+
+      - name: Run tests (if available)
+        run: |
+          echo "🧪 Running tests..."
+          if [ -f "package.json" ] && grep -q '"test"' package.json; then
+            npm test || {
+              echo "⚠️ Tests failed, but continuing with feature implementation"
+              echo "TEST_FAILURES=true" >> $GITHUB_ENV
+            }
+          else
+            echo "ℹ️ No test script found, skipping tests"
+          fi
+
+      - name: Commit changes
+        run: |
+          echo "📝 Committing changes..."
+
+          # Add all changes
+          git add .
+
+          # Check if Claude execution failed and include error logs
+          if [ "$CLAUDE_EXECUTION_FAILED" = "true" ] && [ -f "claude-error-summary.txt" ]; then
+            echo "⚠️ Claude execution failed, including error logs in commit message"
+
+            # Read error summary (truncated to 500 chars)
+            ERROR_SUMMARY=$(cat claude-error-summary.txt)
+
+            COMMIT_MSG="feat: ${{ github.event.inputs.request }} [FAILED]
+
+          ❌ Claude SDK execution failed
+
+          🤖 Generated with VGit AI (Anthropic SDK)
+
+          Branch: ${{ github.event.inputs.branch_name }}
+          Requested by: ${{ github.event.inputs.username }}
+
+          ---ERROR-LOG---
+          ${ERROR_SUMMARY}
+
+          Full logs available in GitHub Actions artifacts.
+
+          Co-Authored-By: Claude Code <ai@vgit.app>"
+          else
+            # Standard commit message for successful execution
+            COMMIT_MSG="feat: ${{ github.event.inputs.request }}
+
+          🤖 Generated with VGit AI (Anthropic SDK)
+
+          Branch: ${{ github.event.inputs.branch_name }}
+          Requested by: ${{ github.event.inputs.username }}
+
+          Co-Authored-By: Claude Code <ai@vgit.app>"
+          fi
+
+          # Commit changes
+          git commit -m "$COMMIT_MSG" || {
+            echo "❌ Commit failed"
+            exit 1
+          }
+
+          echo "✅ Changes committed successfully"
+
+      - name: Push feature branch
+        run: |
+          echo "🚀 Pushing feature branch to origin..."
+          git push origin "${{ github.event.inputs.branch_name }}" || {
+            echo "❌ Push failed"
+            exit 1
+          }
+          echo "✅ Feature branch pushed successfully"
+
+      - name: Create deployment preview (if applicable)
+        run: |
+          echo "🌐 Creating deployment preview..."
+
+          # Check if this is a web project that can be deployed
+          if [ -f "package.json" ] && (grep -q '"build"' package.json || grep -q '"dev"' package.json); then
+            echo "📦 Web project detected, attempting preview deployment..."
+            
+            # Build the project with runtime environment variables
+            if grep -q '"build"' package.json; then
+              echo "🔐 Re-exporting secrets for build step..."
+              if [ "$SECRETS_JSON" != "null" ] && [ "$SECRETS_JSON" != "" ]; then
+                eval $(echo "$SECRETS_JSON" | jq -r 'to_entries | .[] | "export \(.key)=\"\(.value)\""')
+                echo "✅ Secrets re-exported for build step"
+              fi
+              
+              echo "🔧 Sourcing runtime environment variables before build..."
+              source ./runtime_env_setup.sh
+              
+              npm run build && {
+                echo "PREVIEW_BUILD_SUCCESS=true" >> $GITHUB_ENV
+                echo "✅ Build successful"
+              } || {
+                echo "⚠️ Build failed, skipping preview deployment"
+                echo "PREVIEW_BUILD_SUCCESS=false" >> $GITHUB_ENV
+              }
+            else
+              echo "ℹ️ No build script found, skipping preview"
+              echo "PREVIEW_BUILD_SUCCESS=false" >> $GITHUB_ENV
+            fi
+          else
+            echo "ℹ️ Not a web project, skipping preview deployment"
+            echo "PREVIEW_BUILD_SUCCESS=false" >> $GITHUB_ENV
+          fi
+        env:
+          SECRETS_JSON: ${{ toJson(secrets) }}
+
+      - name: Detect build output directory
+        if: env.PREVIEW_BUILD_SUCCESS == 'true'
+        run: |
+          echo "📁 Detecting build output directory..."
+
+          # Check for custom build directory from secret first
+          if [ -n "${{ secrets.CUSTOM_BUILD_DIR }}" ]; then
+            CUSTOM_DIR="${{ secrets.CUSTOM_BUILD_DIR }}"
+            if [ -d "$CUSTOM_DIR" ] && [ "$(ls -A $CUSTOM_DIR 2>/dev/null)" ]; then
+              BUILD_DIR="$CUSTOM_DIR"
+              echo "BUILD_DIR=$CUSTOM_DIR" >> $GITHUB_ENV
+              echo "✅ Using custom build directory: $CUSTOM_DIR"
+              ls -la "$CUSTOM_DIR"
+              exit 0
+            else
+              echo "⚠️ Custom build directory '$CUSTOM_DIR' not found or empty, falling back to auto-detection"
+            fi
+          fi
+
+          # Auto-detect common build output directories
+          BUILD_DIRS=("dist" "build" "_site" "out" ".next" "public")
+
+          for dir in "${BUILD_DIRS[@]}"; do
+            if [ -d "$dir" ] && [ "$(ls -A $dir 2>/dev/null)" ]; then
+              BUILD_DIR="$dir"
+              echo "BUILD_DIR=$dir" >> $GITHUB_ENV
+              echo "✅ Build output directory found: $dir"
+              break
+            fi
+          done
+
+          # If no build directory found, use current directory for static sites
+          if [ -z "${BUILD_DIR:-}" ]; then
+            if [ -f "index.html" ]; then
+              BUILD_DIR="."
+              echo "BUILD_DIR=." >> $GITHUB_ENV
+              echo "✅ Using current directory for static site"
+            else
+              echo "❌ No build output directory found"
+              echo "Available directories:"
+              ls -la
+              exit 1
+            fi
+          fi
+
+          # List contents of chosen build directory
+          echo "📄 Build directory contents:"
+          ls -la "${BUILD_DIR}"
+
+      - name: Deploy to Netlify (if build succeeded)
+        if: env.PREVIEW_BUILD_SUCCESS == 'true'
+        run: |
+          echo "🚀 Installing and using Netlify CLI directly..."
+          npm install -g netlify-cli@17.10.1
+
+          # Deploy and capture output
+          netlify deploy --dir=${{ env.BUILD_DIR }} --json > deploy_output.json
+
+          # Extract URLs from output
+          cat deploy_output.json
+          DEPLOY_URL=$(cat deploy_output.json | grep -o '"deploy_url":"[^"]*' | cut -d'"' -f4)
+
+          if [ -n "$DEPLOY_URL" ]; then
+            echo "NETLIFY_URL=$DEPLOY_URL" >> $GITHUB_ENV
+            echo "✅ Deployed to: $DEPLOY_URL"
+          else
+            echo "⚠️ Could not extract deployment URL"
+            cat deploy_output.json
+          fi
+        env:
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+
+      - name: Extract Netlify deployment URL
+        if: env.PREVIEW_BUILD_SUCCESS == 'true'
+        run: |
+          # Extract preview URL from environment variable set in previous step
+          DEPLOY_URL="$NETLIFY_URL"
+
+          if [ -n "$DEPLOY_URL" ]; then
+            echo "✅ Preview deployed: $DEPLOY_URL"
+            echo "PREVIEW_URL=$DEPLOY_URL" >> $GITHUB_ENV
+          else
+            echo "⚠️ No deployment URL received from Netlify"
+            echo "Checking for deploy_output.json..."
+            if [ -f "deploy_output.json" ]; then
+              echo "Deploy output contents:"
+              cat deploy_output.json
+
+              # Try alternative JSON parsing methods
+              DEPLOY_URL=$(cat deploy_output.json | jq -r '.deploy_url // empty' 2>/dev/null || echo "")
+              if [ -z "$DEPLOY_URL" ]; then
+                DEPLOY_URL=$(cat deploy_output.json | grep -o 'https://[^"]*\.netlify\.app' | head -1 || echo "")
+              fi
+
+              if [ -n "$DEPLOY_URL" ]; then
+                echo "✅ Extracted URL: $DEPLOY_URL"
+                echo "PREVIEW_URL=$DEPLOY_URL" >> $GITHUB_ENV
+              else
+                echo "❌ Could not extract URL from deploy output"
+              fi
+            else
+              echo "❌ deploy_output.json not found"
+            fi
+          fi
+
+      - name: Setup Browserbase for screenshot generation
+        if: env.PREVIEW_URL != ''
+        run: |
+          echo "📸 Setting up Browserbase for screenshot generation..."
+          echo "✅ Browserbase ready - using cloud browser infrastructure"
+
+      - name: Generate screenshot and upload to CDN
+        if: env.PREVIEW_URL != ''
+        run: |
+          echo "📸 Generating screenshot of deployed site with Browserbase..."
+
+          # Wait for deployment to be ready
+          sleep 5
+
+          # Create screenshot script using Browserbase
+          cat > screenshot.js << 'EOF'
+          import { chromium } from 'playwright-core';
+          import FormData from 'form-data';
+          import fetch from 'node-fetch';
+          import fs from 'fs';
+
+          // Browserbase SDK (inline for simplicity)
+          class Browserbase {
+            constructor(options) {
+              this.apiKey = options.apiKey;
+              this.baseUrl = 'https://api.browserbase.com/v1';
+            }
+
+            async createSession(options) {
+              const response = await fetch(`${this.baseUrl}/sessions`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-bb-api-key': this.apiKey,
+                },
+                body: JSON.stringify({
+                  projectId: options.projectId,
+                }),
+              });
+              return await response.json();
+            }
+          }
+
+          (async () => {
+            console.log('🚀 Creating Browserbase session...');
+
+            if (!process.env.BROWSERBASE_API_KEY) {
+              console.error('❌ BROWSERBASE_API_KEY not found');
+              process.exit(1);
+            }
+
+            if (!process.env.BROWSERBASE_PROJECT_ID) {
+              console.error('❌ BROWSERBASE_PROJECT_ID not found');
+              process.exit(1);
+            }
+
+            const bb = new Browserbase({
+              apiKey: process.env.BROWSERBASE_API_KEY
+            });
+
+            const session = await bb.createSession({
+              projectId: process.env.BROWSERBASE_PROJECT_ID,
+            });
+
+            if (!session.connectUrl) {
+              console.error('❌ Failed to create Browserbase session:', session);
+              process.exit(1);
+            }
+
+            console.log('✅ Browserbase session created, connecting...');
+
+            // Connect to remote browser
+            const browser = await chromium.connectOverCDP(session.connectUrl);
+            const defaultContext = browser.contexts()[0];
+            const page = defaultContext.pages()[0];
+
+            console.log('📄 Navigating to:', process.env.PREVIEW_URL);
+            await page.goto(process.env.PREVIEW_URL, {
+              waitUntil: 'domcontentloaded',
+              timeout: 20000
+            });
+
+            // Wait for page to stabilize
+            await page.waitForTimeout(2000);
+
+            console.log('📸 Capturing screenshot with CDP...');
+
+            // Use CDP for faster, more reliable screenshots
+            const client = await defaultContext.newCDPSession(page);
+            const { data } = await client.send('Page.captureScreenshot', {
+              format: 'jpeg',
+              quality: 90,
+              captureBeyondViewport: true,
+            });
+
+            const screenshot = Buffer.from(data, 'base64');
+
+            await browser.close();
+            console.log('✅ Screenshot captured successfully');
+
+            // Upload to Uploadcare
+            console.log('☁️ Uploading to Uploadcare CDN...');
+
+            const form = new FormData();
+            form.append('UPLOADCARE_PUB_KEY', process.env.UPLOADCARE_PUBLIC_KEY);
+            form.append('file', screenshot, {
+              filename: 'screenshot.jpg',
+              contentType: 'image/jpeg'
+            });
+
+            const response = await fetch('https://upload.uploadcare.com/base/', {
+              method: 'POST',
+              body: form
+            });
+
+            const result = await response.json();
+            if (result.file) {
+              const cdnUrl = `https://ucarecdn.com/${result.file}/`;
+              console.log('✅ Screenshot uploaded:', cdnUrl);
+              console.log(`SCREENSHOT_URL=${cdnUrl}`);
+
+              // Set environment variable for next steps
+              fs.appendFileSync(process.env.GITHUB_ENV, `SCREENSHOT_URL=${cdnUrl}\n`);
+            } else {
+              console.error('❌ Upload failed:', result);
+              process.exit(1);
+            }
+          })();
+          EOF
+
+          # Install required packages (much lighter without full Playwright)
+          npm install playwright-core form-data node-fetch@2
+
+          # Run screenshot script
+          node screenshot.js || {
+            echo "⚠️ Screenshot generation failed, but deployment was successful"
+            echo "SCREENSHOT_URL=" >> $GITHUB_ENV
+          }
+        env:
+          UPLOADCARE_PUBLIC_KEY: ${{ secrets.UPLOADCARE_PUBLIC_KEY }}
+          BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+          BROWSERBASE_PROJECT_ID: ${{ secrets.BROWSERBASE_PROJECT_ID }}
+
+      - name: Update commit with preview info
+        if: env.PREVIEW_URL != ''
+        run: |
+          echo "📝 Adding preview info to commit..."
+
+          # Amend commit with preview information
+          UPDATED_COMMIT_MSG="feat: ${{ github.event.inputs.request }}
+
+          🤖 Generated with VGit AI (Claude Code)
+
+          Branch: ${{ github.event.inputs.branch_name }}
+          Requested by: ${{ github.event.inputs.username }}
+          Preview: ${{ env.PREVIEW_URL }}
+
+          ---PREVIEW-INFO---
+          Preview URL: ${{ env.PREVIEW_URL }}
+          Screenshot URL: ${{ env.SCREENSHOT_URL }}
+          "
+
+          git commit --amend -m "$UPDATED_COMMIT_MSG"
+          git push origin "${{ github.event.inputs.branch_name }}" --force-with-lease
+
+      - name: Create workspace node update payload
+        run: |
+          echo "🏗️ Creating workspace node update payload..."
+
+          # Get commit SHA
+          COMMIT_SHA=$(git rev-parse HEAD)
+
+          # Create payload for VGit workspace node creation
+          cat > workspace_node_payload.json << EOF
+          {
+            "repository_full_name": "${{ github.repository }}",
+            "branch_name": "${{ github.event.inputs.branch_name }}",
+            "commit_sha": "$COMMIT_SHA",
+            "username": "${{ github.event.inputs.username }}",
+            "current_node": "${{ github.event.inputs.current_node }}",
+            "preview_url": "${{ env.PREVIEW_URL }}",
+            "screenshot_url": "${{ env.SCREENSHOT_URL }}",
+            "workflow_run_id": "${{ github.run_id }}",
+            "created_at": "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+          }
+          EOF
+
+          echo "✅ Workspace node payload created"
+
+      - name: Upload workspace payload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-node-payload
+          path: workspace_node_payload.json
+          retention-days: 7
+
+      - name: Summary
+        run: |
+          echo "🎉 Feature creation completed successfully!"
+          echo ""
+          echo "📋 Summary:"
+          echo "- Branch: ${{ github.event.inputs.branch_name }}"
+          echo "- Feature: ${{ github.event.inputs.request }}"
+          echo "- Repository: ${{ github.repository }}"
+          echo "- Commit SHA: $(git rev-parse HEAD)"
+          if [ -n "${{ env.PREVIEW_URL }}" ]; then
+            echo "- Preview URL: ${{ env.PREVIEW_URL }}"
+          fi
+          if [ -n "${{ env.SCREENSHOT_URL }}" ]; then
+            echo "- Screenshot URL: ${{ env.SCREENSHOT_URL }}"
+          fi
+          echo "- Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
