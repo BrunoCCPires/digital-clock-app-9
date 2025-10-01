@@ -1,42 +1,172 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
+.clock-container {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 1rem;
+}
+
+.clock-wrapper {
   text-align: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 3rem 2rem;
+  border-radius: 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  min-width: 320px;
+  max-width: 600px;
+  width: 100%;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+.app-title {
+  font-size: 2rem;
+  margin: 0 0 2rem 0;
+  color: #ffffff;
+  font-weight: 300;
+  letter-spacing: 2px;
+  text-transform: uppercase;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
+.time-display {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 2rem 0;
+  font-family: 'Courier New', Courier, monospace;
+  flex-wrap: wrap;
+}
+
+.time-digit {
+  font-size: 4rem;
+  font-weight: 700;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 1rem 1.5rem;
+  border-radius: 10px;
+  min-width: 80px;
+  display: inline-block;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.time-separator {
+  font-size: 4rem;
+  font-weight: 700;
+  color: #ffffff;
+  animation: blink 1s infinite;
+}
+
+.time-period {
+  font-size: 2rem;
+  font-weight: 600;
+  color: #ffffff;
+  margin-left: 0.5rem;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  align-self: flex-end;
+  margin-bottom: 0.5rem;
+}
+
+@keyframes blink {
+  0%, 49% {
+    opacity: 1;
   }
-  to {
-    transform: rotate(360deg);
+  50%, 100% {
+    opacity: 0.3;
   }
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
+.date-display {
+  font-size: 1.25rem;
+  color: #ffffff;
+  margin: 2rem 0;
+  font-weight: 300;
+  letter-spacing: 1px;
+}
+
+.format-toggle {
+  margin-top: 2rem;
+  padding: 0.75rem 2rem;
+  font-size: 1rem;
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 25px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-weight: 500;
+  backdrop-filter: blur(10px);
+}
+
+.format-toggle:hover {
+  background: rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.5);
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+.format-toggle:active {
+  transform: translateY(0);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .clock-wrapper {
+    padding: 2rem 1rem;
+  }
+
+  .app-title {
+    font-size: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .time-digit {
+    font-size: 3rem;
+    padding: 0.75rem 1rem;
+    min-width: 60px;
+  }
+
+  .time-separator {
+    font-size: 3rem;
+  }
+
+  .time-period {
+    font-size: 1.5rem;
+    padding: 0.4rem 0.8rem;
+  }
+
+  .date-display {
+    font-size: 1rem;
+  }
+
+  .format-toggle {
+    font-size: 0.9rem;
+    padding: 0.6rem 1.5rem;
   }
 }
 
-.card {
-  padding: 2em;
-}
+@media (max-width: 480px) {
+  .time-digit {
+    font-size: 2.5rem;
+    padding: 0.5rem 0.75rem;
+    min-width: 50px;
+  }
 
-.read-the-docs {
-  color: #888;
+  .time-separator {
+    font-size: 2.5rem;
+  }
+
+  .time-period {
+    font-size: 1.25rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  .app-title {
+    font-size: 1.25rem;
+  }
+
+  .date-display {
+    font-size: 0.9rem;
+  }
 }

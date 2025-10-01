@@ -1,6 +1,15 @@
-# untitled app
+# Digital Clock App
 
-create a digital clock app
+A beautiful and responsive digital clock application built with React and TypeScript.
+
+## Features
+
+- **Real-time Clock**: Displays the current time with seconds precision
+- **Date Display**: Shows the full date with weekday, month, day, and year
+- **12/24 Hour Format**: Toggle between 12-hour and 24-hour time formats
+- **Responsive Design**: Works beautifully on desktop, tablet, and mobile devices
+- **Modern UI**: Gradient background with smooth animations and transitions
+- **Blinking Separator**: Visual indicator showing the clock is live
 
 ## Getting Started
 
